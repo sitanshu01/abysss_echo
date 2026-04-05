@@ -15,12 +15,18 @@ DEFAULT_OUTPUT_DIR = Path("outputs")
 
 
 @st.cache_data
-def load_dashboard_data(output_dir: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_dashboard_data(
+    output_dir: str,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     root = Path(output_dir)
     cleaned = pd.read_csv(root / "cleaned_acoustic_pings.csv")
     trajectory = pd.read_csv(root / "reconstructed_trajectory.csv")
     speed = pd.read_csv(root / "doppler_speed_summary.csv")
-    return cleaned, trajectory, speed
+    kalman = pd.read_csv(root / "kalman_smoothed_trajectory.csv")
+    predicted = pd.read_csv(root / "predicted_future_path.csv")
+    interception = pd.read_csv(root / "interception_summary.csv")
+    assets = pd.read_csv(root / "tactical_assets_snapshot.csv")
+    return cleaned, trajectory, speed, kalman, predicted, interception, assets
 
 
 def render_dashboard(output_dir: str = "outputs") -> None:
@@ -29,14 +35,16 @@ def render_dashboard(output_dir: str = "outputs") -> None:
     st.title("Abyssal Echo – Acoustic Reconnaissance")
     st.caption("Stealth submarine trajectory reconstruction from distorted hydrophone pings.")
 
-    cleaned, trajectory, speed = load_dashboard_data(output_dir)
+    cleaned, trajectory, speed, kalman, predicted, interception, assets = load_dashboard_data(output_dir)
     latest_track = trajectory.iloc[-1]
     latest_speed = speed.iloc[-1]
+    latest_prediction = predicted.iloc[-1]
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Depth (m)", f"{latest_track['Estimated_Depth_m']:.1f}")
     col2.metric("Sound Speed (m/s)", f"{latest_track['Mean_Sound_Speed_mps']:.1f}")
     col3.metric("Speed (knots)", f"{latest_speed['Submarine_Speed_knots']:.2f}")
+    col4.metric("Projected Depth (m)", f"{latest_prediction['Predicted_Depth_m']:.1f}")
 
     left, right = st.columns([1.7, 1.0])
 
@@ -65,6 +73,27 @@ def render_dashboard(output_dir: str = "outputs") -> None:
                 marker={"size": 4},
             )
         )
+        fig3d.add_trace(
+            go.Scatter3d(
+                x=kalman["Kalman_X"],
+                y=kalman["Kalman_Y"],
+                z=kalman["Kalman_Z"],
+                mode="lines",
+                name="Kalman Track",
+                line={"color": "#f39c12", "width": 6},
+            )
+        )
+        fig3d.add_trace(
+            go.Scatter3d(
+                x=predicted["Predicted_X"],
+                y=predicted["Predicted_Y"],
+                z=predicted["Predicted_Z"],
+                mode="lines+markers",
+                name="Predicted Projection",
+                line={"color": "#e84393", "width": 8, "dash": "dash"},
+                marker={"size": 4},
+            )
+        )
         fig3d.update_layout(
             height=560,
             scene={"xaxis_title": "X (m)", "yaxis_title": "Y (m)", "zaxis_title": "Z (m)"},
@@ -85,6 +114,13 @@ def render_dashboard(output_dir: str = "outputs") -> None:
             mode="lines",
             name="Raw Path",
             line={"dash": "dash", "color": "#636e72"},
+        )
+        fig2d.add_scatter(
+            x=predicted["Predicted_X"],
+            y=predicted["Predicted_Y"],
+            mode="lines+markers",
+            name="Predicted Projection",
+            line={"dash": "dot", "color": "#d63031"},
         )
         st.plotly_chart(fig2d, use_container_width=True)
 
@@ -143,6 +179,29 @@ def render_dashboard(output_dir: str = "outputs") -> None:
         )
         st.plotly_chart(hud_fig, use_container_width=True)
 
+        st.subheader("Interception Window")
+        if interception.empty:
+            st.info("No feasible interception opportunity in the current prediction horizon.")
+        else:
+            best = interception.iloc[0]
+            st.metric("Best Asset", best["Asset_ID"])
+            st.metric("Time To Intercept (s)", f"{best['Time_To_Target_s']:.0f}")
+            st.metric("Confidence", f"{best['Confidence_Score']:.2f}")
+            st.dataframe(
+                interception[
+                    [
+                        "Asset_ID",
+                        "Asset_Type",
+                        "Predicted_Timestamp_ms",
+                        "Time_To_Target_s",
+                        "Response_Time_s",
+                        "Confidence_Score",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+
     st.subheader("Signal Waterfall")
     waterfall = cleaned.copy()
     waterfall["Time_s"] = waterfall["Corrected_Timestamp_ms"] / 1000.0
@@ -159,6 +218,60 @@ def render_dashboard(output_dir: str = "outputs") -> None:
     )
     waterfall_fig.update_layout(height=420, xaxis_title="Corrected Time (s)", yaxis_title="Frequency (Hz)")
     st.plotly_chart(waterfall_fig, use_container_width=True)
+
+    st.subheader("Tactical Ocean Map")
+    tactical_map = go.Figure()
+    tactical_map.add_trace(
+        go.Scatter(
+            x=kalman["Kalman_X"],
+            y=kalman["Kalman_Y"],
+            mode="lines",
+            name="Kalman Track",
+            line={"color": "#fdcb6e", "width": 4},
+        )
+    )
+    tactical_map.add_trace(
+        go.Scatter(
+            x=predicted["Predicted_X"],
+            y=predicted["Predicted_Y"],
+            mode="lines+markers",
+            name="Projected Path",
+            line={"color": "#e84393", "width": 5, "dash": "dash"},
+            marker={"size": 7, "symbol": "diamond"},
+        )
+    )
+    tactical_map.add_trace(
+        go.Scatter(
+            x=assets["Base_X_m"],
+            y=assets["Base_Y_m"],
+            mode="markers+text",
+            name="Tactical Assets",
+            text=assets["Asset_ID"],
+            textposition="bottom center",
+            marker={"size": 14, "color": "#0984e3", "symbol": "triangle-up"},
+        )
+    )
+    if not interception.empty:
+        tactical_map.add_trace(
+            go.Scatter(
+                x=interception["Intercept_X"],
+                y=interception["Intercept_Y"],
+                mode="markers+text",
+                name="Intercept Window",
+                text=interception["Asset_ID"],
+                textposition="top center",
+                marker={"size": 12, "color": "#00cec9", "symbol": "x"},
+            )
+        )
+    tactical_map.update_layout(
+        height=500,
+        xaxis_title="Atlantic Trench X (m)",
+        yaxis_title="Atlantic Trench Y (m)",
+        legend={"orientation": "h"},
+        paper_bgcolor="#f5f6fa",
+        plot_bgcolor="#ecf0f1",
+    )
+    st.plotly_chart(tactical_map, use_container_width=True)
 
 
 if __name__ == "__main__":

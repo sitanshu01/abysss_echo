@@ -30,6 +30,7 @@ def main() -> int:
 
     latest_speed = outputs.speed_summary.iloc[-1]["Submarine_Speed_knots"]
     latest_depth = outputs.trajectory.iloc[-1]["Estimated_Depth_m"]
+    latest_projection = outputs.predicted_path.iloc[-1]
 
     print("Abyssal Echo pipeline complete.")
     print(f"Cleaned ping rows: {len(outputs.cleaned_pings):,}")
@@ -37,6 +38,11 @@ def main() -> int:
     print(f"Latest submarine speed: {latest_speed:.2f} knots")
     print(f"Latest reconstructed depth: {latest_depth:.1f} m")
     print(f"Trajectory file: {Path(args.output_dir) / 'reconstructed_trajectory.csv'}")
+    print(
+        "Projected terminal waypoint: "
+        f"({latest_projection['Predicted_X']:.1f}, {latest_projection['Predicted_Y']:.1f}, {latest_projection['Predicted_Z']:.1f})"
+    )
+    print(f"Predicted path file: {Path(args.output_dir) / 'predicted_future_path.csv'}")
 
     if args.dashboard:
         dashboard_path = Path(__file__).resolve().parent / "abyssal_echo" / "dashboard.py"

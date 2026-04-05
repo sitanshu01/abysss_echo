@@ -18,6 +18,8 @@ DEFAULT_DATA_DIR = Path("data")
 class DatasetPaths:
     acoustic_pings: Path
     engine_logs: Path
+    ocean_currents: Path
+    tactical_assets: Path
 
 
 def get_default_paths(base_dir: Path | None = None) -> DatasetPaths:
@@ -25,26 +27,44 @@ def get_default_paths(base_dir: Path | None = None) -> DatasetPaths:
     return DatasetPaths(
         acoustic_pings=root / "acoustic_pings.csv",
         engine_logs=root / "engine_logs.csv",
+        ocean_currents=root / "ocean_currents.csv",
+        tactical_assets=root / "tactical_assets.csv",
     )
 
 
-def load_datasets(paths: DatasetPaths) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_datasets(paths: DatasetPaths) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load the acoustic ping and engine log datasets."""
-    return pd.read_csv(paths.acoustic_pings), pd.read_csv(paths.engine_logs)
+    return (
+        pd.read_csv(paths.acoustic_pings),
+        pd.read_csv(paths.engine_logs),
+        pd.read_csv(paths.ocean_currents),
+        pd.read_csv(paths.tactical_assets),
+    )
 
 
 def maybe_generate_synthetic_data(paths: DatasetPaths, seed: int = 7) -> None:
     """Create a coherent demo dataset when CSV files are missing."""
-    if paths.acoustic_pings.exists() and paths.engine_logs.exists():
+    if (
+        paths.acoustic_pings.exists()
+        and paths.engine_logs.exists()
+        and paths.ocean_currents.exists()
+        and paths.tactical_assets.exists()
+    ):
         return
 
     paths.acoustic_pings.parent.mkdir(parents=True, exist_ok=True)
-    acoustic, engine = generate_synthetic_data(seed=seed)
-    acoustic.to_csv(paths.acoustic_pings, index=False)
-    engine.to_csv(paths.engine_logs, index=False)
+    acoustic, engine, currents, assets = generate_synthetic_data(seed=seed)
+    if not paths.acoustic_pings.exists():
+        acoustic.to_csv(paths.acoustic_pings, index=False)
+    if not paths.engine_logs.exists():
+        engine.to_csv(paths.engine_logs, index=False)
+    if not paths.ocean_currents.exists():
+        currents.to_csv(paths.ocean_currents, index=False)
+    if not paths.tactical_assets.exists():
+        assets.to_csv(paths.tactical_assets, index=False)
 
 
-def generate_synthetic_data(seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame]:
+def generate_synthetic_data(seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Generate a synthetic submarine pass with reflections and sensor drift."""
     rng = np.random.default_rng(seed)
 
@@ -163,6 +183,57 @@ def generate_synthetic_data(seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame]:
                     }
                 )
 
-    acoustic = pd.DataFrame(packet_rows).sort_values("Timestamp_ms").reset_index(drop=True)
-    return acoustic, engine_logs
+    current_depths = np.array([1200.0, 1450.0, 1700.0, 1950.0, 2200.0])
+    current_rows: list[dict[str, float]] = []
+    current_times = np.arange(0.0, emission_times.max() + 72_000.0, 12_000.0)
+    for timestamp_ms in current_times:
+        phase = timestamp_ms / 60_000.0
+        for depth_m in current_depths:
+            current_rows.append(
+                {
+                    "Timestamp_ms": timestamp_ms,
+                    "Depth_m": depth_m,
+                    "Current_U_mps": 0.18 * np.sin(phase / 3.0 + depth_m / 900.0) + rng.normal(0, 0.01),
+                    "Current_V_mps": 0.12 * np.cos(phase / 4.0 + depth_m / 1100.0) + rng.normal(0, 0.01),
+                    "Current_W_mps": -0.01 * np.sin(phase / 5.0 + depth_m / 1400.0) + rng.normal(0, 0.002),
+                }
+            )
 
+    tactical_assets = pd.DataFrame(
+        [
+            {
+                "Asset_ID": "P8_POSEIDON",
+                "Asset_Type": "Airborne ASW",
+                "Base_X_m": 9000.0,
+                "Base_Y_m": -2500.0,
+                "Base_Z_m": 0.0,
+                "Max_Speed_knots": 360.0,
+                "Launch_Delay_s": 30.0,
+                "Detection_Radius_m": 2500.0,
+            },
+            {
+                "Asset_ID": "SSK_ARGUS",
+                "Asset_Type": "Interceptor Sub",
+                "Base_X_m": -8200.0,
+                "Base_Y_m": -5400.0,
+                "Base_Z_m": -1200.0,
+                "Max_Speed_knots": 28.0,
+                "Launch_Delay_s": 120.0,
+                "Detection_Radius_m": 900.0,
+            },
+            {
+                "Asset_ID": "USV_TRIDENT",
+                "Asset_Type": "Surface Drone",
+                "Base_X_m": 7600.0,
+                "Base_Y_m": -1600.0,
+                "Base_Z_m": 0.0,
+                "Max_Speed_knots": 42.0,
+                "Launch_Delay_s": 90.0,
+                "Detection_Radius_m": 1200.0,
+            },
+        ]
+    )
+
+    acoustic = pd.DataFrame(packet_rows).sort_values("Timestamp_ms").reset_index(drop=True)
+    ocean_currents = pd.DataFrame(current_rows).sort_values(["Timestamp_ms", "Depth_m"]).reset_index(drop=True)
+    return acoustic, engine_logs, ocean_currents, tactical_assets
