@@ -17,7 +17,19 @@ DEFAULT_OUTPUT_DIR = Path("outputs")
 @st.cache_data
 def load_dashboard_data(
     output_dir: str,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+) -> tuple[
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+    pd.DataFrame,
+]:
     root = Path(output_dir)
     cleaned = pd.read_csv(root / "cleaned_acoustic_pings.csv")
     trajectory = pd.read_csv(root / "reconstructed_trajectory.csv")
@@ -26,7 +38,11 @@ def load_dashboard_data(
     predicted = pd.read_csv(root / "predicted_future_path.csv")
     interception = pd.read_csv(root / "interception_summary.csv")
     assets = pd.read_csv(root / "tactical_assets_snapshot.csv")
-    return cleaned, trajectory, speed, kalman, predicted, interception, assets
+    bathymetry = pd.read_csv(root / "bathymetry_snapshot.csv")
+    anomalies = pd.read_csv(root / "anomaly_events.csv")
+    threat = pd.read_csv(root / "threat_timeseries.csv")
+    threat_summary = pd.read_csv(root / "threat_summary.csv")
+    return cleaned, trajectory, speed, kalman, predicted, interception, assets, bathymetry, anomalies, threat, threat_summary
 
 
 def render_dashboard(output_dir: str = "outputs") -> None:
@@ -35,16 +51,48 @@ def render_dashboard(output_dir: str = "outputs") -> None:
     st.title("Abyssal Echo – Acoustic Reconnaissance")
     st.caption("Stealth submarine trajectory reconstruction from distorted hydrophone pings.")
 
-    cleaned, trajectory, speed, kalman, predicted, interception, assets = load_dashboard_data(output_dir)
+    (
+        cleaned,
+        trajectory,
+        speed,
+        kalman,
+        predicted,
+        interception,
+        assets,
+        bathymetry,
+        anomalies,
+        threat,
+        threat_summary,
+    ) = load_dashboard_data(output_dir)
     latest_track = trajectory.iloc[-1]
     latest_speed = speed.iloc[-1]
     latest_prediction = predicted.iloc[-1]
+    latest_threat = threat_summary.iloc[0]
+
+    replay_index = st.slider(
+        "Replay Timeline",
+        min_value=1,
+        max_value=len(kalman),
+        value=len(kalman),
+        help="Scrub the mission timeline to replay reconstruction and prediction buildup.",
+    )
+    replay_track = trajectory.iloc[:replay_index].copy()
+    replay_kalman = kalman.iloc[:replay_index].copy()
+    replay_end_time = replay_kalman["Corrected_Timestamp_ms"].iloc[-1]
+    replay_predicted = predicted.loc[predicted["Predicted_Timestamp_ms"] >= replay_end_time].copy()
+    if replay_predicted.empty:
+        replay_predicted = predicted.tail(1).copy()
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Current Depth (m)", f"{latest_track['Estimated_Depth_m']:.1f}")
     col2.metric("Sound Speed (m/s)", f"{latest_track['Mean_Sound_Speed_mps']:.1f}")
     col3.metric("Speed (knots)", f"{latest_speed['Submarine_Speed_knots']:.2f}")
     col4.metric("Projected Depth (m)", f"{latest_prediction['Predicted_Depth_m']:.1f}")
+
+    col5, col6, col7 = st.columns(3)
+    col5.metric("Threat Level", latest_threat["Current_Threat_Level"])
+    col6.metric("Peak Threat", f"{latest_threat['Peak_Threat_Score']:.2f}")
+    col7.metric("Prediction Confidence", f"{latest_prediction['Confidence_Score']:.2f}")
 
     left, right = st.columns([1.7, 1.0])
 
@@ -75,9 +123,9 @@ def render_dashboard(output_dir: str = "outputs") -> None:
         )
         fig3d.add_trace(
             go.Scatter3d(
-                x=kalman["Kalman_X"],
-                y=kalman["Kalman_Y"],
-                z=kalman["Kalman_Z"],
+                x=replay_kalman["Kalman_X"],
+                y=replay_kalman["Kalman_Y"],
+                z=replay_kalman["Kalman_Z"],
                 mode="lines",
                 name="Kalman Track",
                 line={"color": "#f39c12", "width": 6},
@@ -85,9 +133,9 @@ def render_dashboard(output_dir: str = "outputs") -> None:
         )
         fig3d.add_trace(
             go.Scatter3d(
-                x=predicted["Predicted_X"],
-                y=predicted["Predicted_Y"],
-                z=predicted["Predicted_Z"],
+                x=replay_predicted["Predicted_X"],
+                y=replay_predicted["Predicted_Y"],
+                z=replay_predicted["Predicted_Z"],
                 mode="lines+markers",
                 name="Predicted Projection",
                 line={"color": "#e84393", "width": 8, "dash": "dash"},
@@ -102,26 +150,38 @@ def render_dashboard(output_dir: str = "outputs") -> None:
         st.plotly_chart(fig3d, use_container_width=True)
 
         fig2d = px.line(
-            trajectory,
+            replay_track,
             x="Corrected_X",
             y="Corrected_Y",
             markers=True,
             title="Top-Down Track",
         )
         fig2d.add_scatter(
-            x=trajectory["Raw_X"],
-            y=trajectory["Raw_Y"],
+            x=replay_track["Raw_X"],
+            y=replay_track["Raw_Y"],
             mode="lines",
             name="Raw Path",
             line={"dash": "dash", "color": "#636e72"},
         )
         fig2d.add_scatter(
-            x=predicted["Predicted_X"],
-            y=predicted["Predicted_Y"],
+            x=replay_predicted["Predicted_X"],
+            y=replay_predicted["Predicted_Y"],
             mode="lines+markers",
             name="Predicted Projection",
             line={"dash": "dot", "color": "#d63031"},
         )
+        for row in replay_predicted.itertuples(index=False):
+            fig2d.add_shape(
+                type="circle",
+                xref="x",
+                yref="y",
+                x0=row.Predicted_X - row.Uncertainty_Radius_m,
+                y0=row.Predicted_Y - row.Uncertainty_Radius_m,
+                x1=row.Predicted_X + row.Uncertainty_Radius_m,
+                y1=row.Predicted_Y + row.Uncertainty_Radius_m,
+                line={"color": "rgba(232, 67, 147, 0.14)"},
+                fillcolor="rgba(232, 67, 147, 0.08)",
+            )
         st.plotly_chart(fig2d, use_container_width=True)
 
     with right:
@@ -202,6 +262,19 @@ def render_dashboard(output_dir: str = "outputs") -> None:
                 hide_index=True,
             )
 
+        st.subheader("Threat Console")
+        st.write(latest_threat["Recommended_Action"])
+        threat_fig = px.line(
+            threat,
+            x="Predicted_Timestamp_ms",
+            y="Threat_Score",
+            color="Threat_Level",
+            color_discrete_map={"Low": "#00b894", "Medium": "#fdcb6e", "High": "#d63031"},
+            title="Projected Threat Over Time",
+        )
+        threat_fig.update_layout(height=250, xaxis_title="Prediction Timestamp (ms)", yaxis_title="Threat Score")
+        st.plotly_chart(threat_fig, use_container_width=True)
+
     st.subheader("Signal Waterfall")
     waterfall = cleaned.copy()
     waterfall["Time_s"] = waterfall["Corrected_Timestamp_ms"] / 1000.0
@@ -219,12 +292,32 @@ def render_dashboard(output_dir: str = "outputs") -> None:
     waterfall_fig.update_layout(height=420, xaxis_title="Corrected Time (s)", yaxis_title="Frequency (Hz)")
     st.plotly_chart(waterfall_fig, use_container_width=True)
 
+    st.subheader("Anomaly Feed")
+    st.dataframe(
+        anomalies[["Event_Type", "Timestamp_ms", "Severity", "Description"]].head(8),
+        use_container_width=True,
+        hide_index=True,
+    )
+
     st.subheader("Tactical Ocean Map")
     tactical_map = go.Figure()
+    bathy_grid = bathymetry.pivot(index="Y_m", columns="X_m", values="Seabed_Depth_m")
+    tactical_map.add_trace(
+        go.Contour(
+            x=bathy_grid.columns.to_numpy(dtype=float),
+            y=bathy_grid.index.to_numpy(dtype=float),
+            z=bathy_grid.to_numpy(dtype=float),
+            colorscale="Blues",
+            opacity=0.45,
+            contours={"showlabels": False},
+            showscale=False,
+            name="Bathymetry",
+        )
+    )
     tactical_map.add_trace(
         go.Scatter(
-            x=kalman["Kalman_X"],
-            y=kalman["Kalman_Y"],
+            x=replay_kalman["Kalman_X"],
+            y=replay_kalman["Kalman_Y"],
             mode="lines",
             name="Kalman Track",
             line={"color": "#fdcb6e", "width": 4},
@@ -232,8 +325,8 @@ def render_dashboard(output_dir: str = "outputs") -> None:
     )
     tactical_map.add_trace(
         go.Scatter(
-            x=predicted["Predicted_X"],
-            y=predicted["Predicted_Y"],
+            x=replay_predicted["Predicted_X"],
+            y=replay_predicted["Predicted_Y"],
             mode="lines+markers",
             name="Projected Path",
             line={"color": "#e84393", "width": 5, "dash": "dash"},
@@ -263,6 +356,20 @@ def render_dashboard(output_dir: str = "outputs") -> None:
                 marker={"size": 12, "color": "#00cec9", "symbol": "x"},
             )
         )
+    tactical_map.add_trace(
+        go.Scatter(
+            x=[replay_predicted["Predicted_X"].iloc[-1]],
+            y=[replay_predicted["Predicted_Y"].iloc[-1]],
+            mode="markers",
+            name="Projected Contact Zone",
+            marker={
+                "size": max(20.0, replay_predicted["Uncertainty_Radius_m"].iloc[-1] / 50.0),
+                "color": "rgba(214, 48, 49, 0.20)",
+                "line": {"color": "#d63031", "width": 2},
+                "symbol": "circle",
+            },
+        )
+    )
     tactical_map.update_layout(
         height=500,
         xaxis_title="Atlantic Trench X (m)",

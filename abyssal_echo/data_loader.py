@@ -20,6 +20,7 @@ class DatasetPaths:
     engine_logs: Path
     ocean_currents: Path
     tactical_assets: Path
+    bathymetry: Path
 
 
 def get_default_paths(base_dir: Path | None = None) -> DatasetPaths:
@@ -29,16 +30,20 @@ def get_default_paths(base_dir: Path | None = None) -> DatasetPaths:
         engine_logs=root / "engine_logs.csv",
         ocean_currents=root / "ocean_currents.csv",
         tactical_assets=root / "tactical_assets.csv",
+        bathymetry=root / "bathymetry.csv",
     )
 
 
-def load_datasets(paths: DatasetPaths) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_datasets(
+    paths: DatasetPaths,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load the acoustic ping and engine log datasets."""
     return (
         pd.read_csv(paths.acoustic_pings),
         pd.read_csv(paths.engine_logs),
         pd.read_csv(paths.ocean_currents),
         pd.read_csv(paths.tactical_assets),
+        pd.read_csv(paths.bathymetry),
     )
 
 
@@ -49,11 +54,12 @@ def maybe_generate_synthetic_data(paths: DatasetPaths, seed: int = 7) -> None:
         and paths.engine_logs.exists()
         and paths.ocean_currents.exists()
         and paths.tactical_assets.exists()
+        and paths.bathymetry.exists()
     ):
         return
 
     paths.acoustic_pings.parent.mkdir(parents=True, exist_ok=True)
-    acoustic, engine, currents, assets = generate_synthetic_data(seed=seed)
+    acoustic, engine, currents, assets, bathymetry = generate_synthetic_data(seed=seed)
     if not paths.acoustic_pings.exists():
         acoustic.to_csv(paths.acoustic_pings, index=False)
     if not paths.engine_logs.exists():
@@ -62,9 +68,13 @@ def maybe_generate_synthetic_data(paths: DatasetPaths, seed: int = 7) -> None:
         currents.to_csv(paths.ocean_currents, index=False)
     if not paths.tactical_assets.exists():
         assets.to_csv(paths.tactical_assets, index=False)
+    if not paths.bathymetry.exists():
+        bathymetry.to_csv(paths.bathymetry, index=False)
 
 
-def generate_synthetic_data(seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def generate_synthetic_data(
+    seed: int = 7,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Generate a synthetic submarine pass with reflections and sensor drift."""
     rng = np.random.default_rng(seed)
 
@@ -234,6 +244,24 @@ def generate_synthetic_data(seed: int = 7) -> tuple[pd.DataFrame, pd.DataFrame, 
         ]
     )
 
+    x_grid = np.linspace(-12000.0, 16000.0, 40)
+    y_grid = np.linspace(-9000.0, 9000.0, 34)
+    xx, yy = np.meshgrid(x_grid, y_grid)
+    seabed = (
+        2800.0
+        + 0.00002 * (xx**2)
+        + 0.00003 * (yy**2)
+        + 350.0 * np.sin(xx / 3800.0)
+        - 220.0 * np.cos(yy / 2700.0)
+    )
+    bathymetry = pd.DataFrame(
+        {
+            "X_m": xx.ravel(),
+            "Y_m": yy.ravel(),
+            "Seabed_Depth_m": seabed.ravel(),
+        }
+    )
+
     acoustic = pd.DataFrame(packet_rows).sort_values("Timestamp_ms").reset_index(drop=True)
     ocean_currents = pd.DataFrame(current_rows).sort_values(["Timestamp_ms", "Depth_m"]).reset_index(drop=True)
-    return acoustic, engine_logs, ocean_currents, tactical_assets
+    return acoustic, engine_logs, ocean_currents, tactical_assets, bathymetry

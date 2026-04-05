@@ -31,6 +31,7 @@ def main() -> int:
     latest_speed = outputs.speed_summary.iloc[-1]["Submarine_Speed_knots"]
     latest_depth = outputs.trajectory.iloc[-1]["Estimated_Depth_m"]
     latest_projection = outputs.predicted_path.iloc[-1]
+    threat = outputs.threat_summary.iloc[0]
 
     print("Abyssal Echo pipeline complete.")
     print(f"Cleaned ping rows: {len(outputs.cleaned_pings):,}")
@@ -42,6 +43,7 @@ def main() -> int:
         "Projected terminal waypoint: "
         f"({latest_projection['Predicted_X']:.1f}, {latest_projection['Predicted_Y']:.1f}, {latest_projection['Predicted_Z']:.1f})"
     )
+    print(f"Current threat level: {threat['Current_Threat_Level']} ({threat['Peak_Threat_Score']:.2f} peak)")
     print(f"Predicted path file: {Path(args.output_dir) / 'predicted_future_path.csv'}")
 
     if args.dashboard:
